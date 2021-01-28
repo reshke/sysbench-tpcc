@@ -43,6 +43,8 @@ CUST_PER_DIST=3000
 
 -- Command line options
 sysbench.cmdline.options = {
+    skipddl = 
+    {"do not create tables & indx", true},
    scale =
       {"Scale factor (warehouses)", 100},
    tables =
@@ -63,6 +65,7 @@ sysbench.cmdline.options = {
       {"Storage engine, if MySQL is used", "innodb"},
    mysql_table_options =
       {"Extra table options, if MySQL is used. e.g. 'COLLATE latin1_bin'", ""}
+
 }
 
 function sleep(n)
@@ -94,16 +97,27 @@ function cmd_prepare()
 
    local drv,con = db_connection_init()
 
-   -- create tables in parallel table per thread
-   for i = sysbench.tid % sysbench.opt.threads + 1, sysbench.opt.tables,
-   sysbench.opt.threads do
-     create_tables(drv, con, i)
+   print("SKIP DDL IS", sysbench.opt.skipddl)
+
+
+
+
+
+
+
+
+   if not sysbench.opt.skipddl then 
+       -- create tables in parallel table per thread
+       for i = sysbench.tid % sysbench.opt.threads + 1, sysbench.opt.tables,
+       sysbench.opt.threads do
+         create_tables(drv, con, i)
+       end
+       
+       -- make sure all tables are created before we load data
+       --
+       print("Waiting on tables 30 sec\n")
+       sleep(30)
    end
-
-   -- make sure all tables are created before we load data
-
-   print("Waiting on tables 30 sec\n")
-   sleep(30)
 
    for i = sysbench.tid % sysbench.opt.threads + 1, sysbench.opt.scale,
    sysbench.opt.threads do
@@ -421,87 +435,79 @@ function load_tables(drv, con, warehouse_num)
 	  --con:query("SET autocommit=1")
 
    print(string.format("loading tables: %d for warehouse: %d\n", table_num, warehouse_num))
-
-    con:bulk_insert_init("INSERT INTO warehouse" .. table_num .. 
-	" (w_id, w_name, w_street_1, w_street_2, w_city, w_state, w_zip, w_tax, w_ytd) values")
-
-    query = string.format([[(%d, '%s','%s','%s', '%s', '%s', '%s', %f,300000)]],
-	warehouse_num, sysbench.rand.string("name-@@@@@"), sysbench.rand.string("street1-@@@@@@@@@@"),
+   
+    qry_table = string.format([[INSERT INTO warehouse%d (w_id, w_name, w_street_1, w_street_2, w_city, w_state, w_zip, w_tax, w_ytd) values(%d, '%s','%s','%s', '%s', '%s', '%s', %f,300000)]],
+        table_num, warehouse_num, sysbench.rand.string("name-@@@@@"), sysbench.rand.string("street1-@@@@@@@@@@"),
         sysbench.rand.string("street2-@@@@@@@@@@"), sysbench.rand.string("city-@@@@@@@@@@"),
         sysbench.rand.string("@@"),sysbench.rand.string("zip-#####"),sysbench.rand.uniform_double()*0.2 )
-
-    con:bulk_insert_next(query)
-    con:bulk_insert_done()
-
-    con:bulk_insert_init("INSERT INTO district" .. table_num .. 
-	" (d_id, d_w_id, d_name, d_street_1, d_street_2, d_city, d_state, d_zip, d_tax, d_ytd, d_next_o_id) values")
+       
+    print("processign query !!!!", qry_table)
+    con:query(qry_table)
 
    for d_id = 1 , DIST_PER_WARE do
- 
-      query = string.format([[(%d, %d, '%s','%s','%s', '%s', '%s', '%s', %f,30000,3001)]],
-	d_id, warehouse_num, sysbench.rand.string("name-@@@@@"), sysbench.rand.string("street1-@@@@@@@@@@"),
-        sysbench.rand.string("street2-@@@@@@@@@@"), sysbench.rand.string("city-@@@@@@@@@@"),
+       qry = string.format([[INSERT INTO district%d(d_id, d_w_id, d_name, d_street_1, d_street_2, d_city, d_state, d_zip, d_tax, d_ytd, d_next_o_id) values 
+       (%d, %d, '%s','%s','%s', '%s', '%s', '%s', %f,30000,3001)]], table_num, d_id, warehouse_num, 
+      sysbench.rand.string("name-@@@@@"), sysbench.rand.string("street1-@@@@@@@@@@"),
+      sysbench.rand.string("street2-@@@@@@@@@@"), sysbench.rand.string("city-@@@@@@@@@@"),
         sysbench.rand.string("@@"),sysbench.rand.string("zip-#####"),sysbench.rand.uniform_double()*0.2 )
-      con:bulk_insert_next(query)
 
+
+        print("processing qry !!!!", qry)
+
+        con:query(qry)
    end
-   con:bulk_insert_done()
 
 -- CUSTOMER TABLE
-
-   con:bulk_insert_init("INSERT INTO customer" .. table_num .. [[
-	  (c_id, c_d_id, c_w_id, c_first, c_middle, c_last, c_street_1, c_street_2, c_city, c_state, c_zip, 
-	   c_phone, c_since, c_credit, c_credit_lim, c_discount, c_balance, c_ytd_payment, c_payment_cnt, c_delivery_cnt, 
-           c_data) values]])
 
    for d_id = 1 , DIST_PER_WARE do
    for c_id = 1 , CUST_PER_DIST do
         local c_last
-
-	if c_id <= 1000 then
-		c_last = Lastname(c_id - 1)
-	else 
-		c_last = Lastname(NURand(255, 0, 999))
-	end
- 
-      query = string.format([[(%d, %d, %d, '%s','OE','%s','%s', '%s', '%s', '%s', '%s','%s',NOW(),'%s',50000,%f,-10,10,1,0,'%s' )]],
-	c_id, d_id, warehouse_num, 
-        sysbench.rand.string("first-"..string.rep("@",sysbench.rand.uniform(2,10))), 
-        c_last,
-        sysbench.rand.string("street1-@@@@@@@@@@"),
-        sysbench.rand.string("street2-@@@@@@@@@@"), sysbench.rand.string("city-@@@@@@@@@@"),
+        
+        if c_id <= 1000 then
+            c_last = Lastname(c_id - 1)
+        else 
+            c_last = Lastname(NURand(255, 0, 999))
+        end
+        
+        qry = string.format([[INSERT INTO customer1
+	  (c_id, c_d_id, c_w_id, c_first, c_middle, c_last, c_street_1, c_street_2, c_city, c_state, c_zip, 
+	   c_phone, c_since, c_credit, c_credit_lim, c_discount, c_balance, c_ytd_payment, c_payment_cnt, c_delivery_cnt, 
+           c_data) values(%d, %d, %d, '%s','OE','%s','%s', '%s', '%s', '%s', '%s','%s',NOW(),'%s',50000,%f,-10,10,1,0,'%s' )]],
+           c_id, d_id, warehouse_num, sysbench.rand.string("first-"..string.rep("@",sysbench.rand.uniform(2,10))), 
+           c_last, sysbench.rand.string("street1-@@@@@@@@@@"), sysbench.rand.string("street2-@@@@@@@@@@"), sysbench.rand.string("city-@@@@@@@@@@"),
         sysbench.rand.string("@@"),sysbench.rand.string("zip-#####"),
         sysbench.rand.string(string.rep("#",16)),
         (sysbench.rand.uniform(1,100) > 10) and "GC" or "BC",
 	sysbench.rand.uniform_double()*0.5,
 	string.rep(sysbench.rand.string("@"),sysbench.rand.uniform(300,500))
-        
         )
-      con:bulk_insert_next(query)
 
+        print("processign query !!!!", qry)
+        con:query(qry)
    end 
    end
 
-   con:bulk_insert_done()
 
 -- HISTORY TABLE
 
-   con:bulk_insert_init("INSERT INTO history" .. table_num .. [[
-	  (h_c_id, h_c_d_id, h_c_w_id, h_d_id, h_w_id, h_date, h_amount, h_data) values]])
 
    for d_id = 1 , DIST_PER_WARE do
    for c_id = 1 , CUST_PER_DIST do
  
+      con:bulk_insert_init("INSERT INTO history" .. table_num .. [[
+	  (h_c_id, h_c_d_id, h_c_w_id, h_d_id, h_w_id, h_date, h_amount, h_data) values]])
+      
       query = string.format([[(%d, %d, %d, %d, %d, NOW(), 10, '%s' )]],
 	c_id, d_id, warehouse_num, d_id, warehouse_num, 
 	string.rep(sysbench.rand.string("@"),sysbench.rand.uniform(12,24))
         )
       con:bulk_insert_next(query)
+      
+      con:bulk_insert_done()
 
    end 
    end
 
-   con:bulk_insert_done()
 
     local tab = {}
     local a_counts = {}
@@ -515,9 +521,6 @@ function load_tables(drv, con, warehouse_num)
         tab[i], tab[j] = tab[j], tab[i]
     end
 
-   con:bulk_insert_init("INSERT INTO orders" .. table_num .. [[
-	  (o_id, o_d_id, o_w_id, o_c_id, o_entry_d, o_carrier_id, o_ol_cnt, o_all_local) values]])
-
    a_counts[warehouse_num] = {}
 
    for d_id = 1 , DIST_PER_WARE do
@@ -525,6 +528,10 @@ function load_tables(drv, con, warehouse_num)
    for o_id = 1 , 3000 do
 -- 3,000 rows in the ORDER table with
    a_counts[warehouse_num][d_id][o_id] = sysbench.rand.uniform(5,15)
+       
+       con:bulk_insert_init("INSERT INTO orders" .. table_num .. [[
+	  (o_id, o_d_id, o_w_id, o_c_id, o_entry_d, o_carrier_id, o_ol_cnt, o_all_local) values]])
+
  
       query = string.format([[(%d, %d, %d, %d, NOW(), %s, %d, 1 )]],
 	o_id, d_id, warehouse_num, tab[o_id], 
@@ -532,19 +539,19 @@ function load_tables(drv, con, warehouse_num)
         a_counts[warehouse_num][d_id][o_id]
         )
       con:bulk_insert_next(query)
-
+      
+      con:bulk_insert_done()
    end 
    end
 
-   con:bulk_insert_done()
 
 -- STOCK table
+   for s_id = 1 , 100000 do
 
    con:bulk_insert_init("INSERT INTO stock" .. table_num .. 
 	" (s_i_id, s_w_id, s_quantity, s_dist_01, s_dist_02, s_dist_03, s_dist_04, s_dist_05, s_dist_06, "..
         " s_dist_07, s_dist_08, s_dist_09, s_dist_10, s_ytd, s_order_cnt, s_remote_cnt, s_data) values")
 
-   for s_id = 1 , 100000 do
  
       query = string.format([[(%d, %d, %d,'%s','%s','%s','%s','%s','%s','%s','%s','%s','%s',0,0,0,'%s')]],
 	s_id, warehouse_num, sysbench.rand.uniform(10,100),
@@ -561,18 +568,20 @@ function load_tables(drv, con, warehouse_num)
 	string.rep(sysbench.rand.string("@"),sysbench.rand.uniform(26,50)))
       con:bulk_insert_next(query)
 
-   end 
    con:bulk_insert_done()
+   
+   end 
 
    con:query(string.format("INSERT INTO new_orders%d (no_o_id, no_d_id, no_w_id) SELECT o_id, o_d_id, o_w_id FROM orders%d WHERE o_id>2100 and o_w_id=%d", table_num, table_num, warehouse_num))
 
-   con:bulk_insert_init("INSERT INTO order_line" .. table_num .. [[
-	  (ol_o_id, ol_d_id, ol_w_id, ol_number, ol_i_id, ol_supply_w_id, ol_delivery_d, 
-           ol_quantity, ol_amount, ol_dist_info ) values]])
 
    for d_id = 1 , DIST_PER_WARE do
    for o_id = 1 , 3000 do
    for ol_id = 1, a_counts[warehouse_num][d_id][o_id] do 
+       
+       con:bulk_insert_init("INSERT INTO order_line" .. table_num .. [[
+	  (ol_o_id, ol_d_id, ol_w_id, ol_number, ol_i_id, ol_supply_w_id, ol_delivery_d, 
+           ol_quantity, ol_amount, ol_dist_info ) values]])
  
       query = string.format([[(%d, %d, %d, %d, %d, %d, %s, 5, %f, '%s' )]],
 	    o_id, d_id, warehouse_num, ol_id, sysbench.rand.uniform(1, MAXITEMS), warehouse_num,
@@ -581,13 +590,13 @@ function load_tables(drv, con, warehouse_num)
 	string.rep(sysbench.rand.string("@"),24)
         )
       res=con:bulk_insert_next(query)
-      
+   
+      con:bulk_insert_done()
    end
    end 
    end
 
-   con:bulk_insert_done()
-
+  
   end
 
    if drv:name() == "mysql"
