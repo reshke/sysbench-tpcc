@@ -565,12 +565,14 @@ function load_tables(warehouse_num)
    
    end 
 
-   local drv,con = db_connection_init()
-   query = string.format("INSERT INTO new_orders%d (no_o_id, no_d_id, no_w_id) SELECT o_id, o_d_id, o_w_id FROM orders%d WHERE o_id>2100 and o_w_id=%d", table_num, table_num, warehouse_num)
-   print("processign query !!!!", query)
-   con:query(query)
-   con:disconnect()
+   if false then
+       local drv,con = db_connection_init()
 
+       query = string.format("INSERT INTO new_orders%d (no_o_id, no_d_id, no_w_id) SELECT o_id, o_d_id, o_w_id FROM orders%d WHERE o_id>%d and o_w_id=%d", table_num, table_num, 21, warehouse_num)
+       print("processign query !!!!", query)
+       con:query(query)
+       con:disconnect()
+   end
 
    for d_id = 1 , DIST_PER_WARE do
    for o_id = 1 , CUST_PER_DIST do
@@ -596,12 +598,6 @@ function load_tables(warehouse_num)
 
   
   end
-
-   if drv:name() == "mysql"
-   then
---   	con:query("SET @trx = (SELECT @@global.innodb_flush_log_at_trx_commit=0)")
-   	con:query("SET GLOBAL innodb_flush_log_at_trx_commit=@trx")
-   end
 
 end
 
