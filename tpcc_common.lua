@@ -37,12 +37,12 @@ if sysbench.cmdline.command == nil then
    error("Command is required. Supported commands: prepare, run, cleanup, help")
 end
 
-MAXITEMS=100000
+MAXITEMS=100
 DIST_PER_WARE=10
 CUST_PER_DIST=30
-MAXSTOCK=100
 
 ORDER_PER_DIST=30
+NEW_ORDER_BOUND=21
 
 -- Command line options
 sysbench.cmdline.options = {
@@ -94,6 +94,40 @@ function db_connection_init()
    return drv,con
 end
 
+
+function load_local_router_tables(tbl_num)
+
+   local qry = string.format([[
+	create table IF NOT EXISTS item%d (
+	i_id int not null, 
+	i_im_id int, 
+	i_name varchar(24), 
+	i_price decimal(5,2), 
+	i_data varchar(50),
+	PRIMARY KEY(i_id) 
+	)]], tbl_num)
+      
+   local drv,con = db_connection_init()
+   con:query(qry)
+   con:disconnect()
+   
+   for j = 1 , MAXITEMS do
+       local drv,con = db_connection_init()
+       local i_im_id = sysbench.rand.uniform(1,10000)
+       local i_price = sysbench.rand.uniform_double()*100+1
+       -- i_name is not generated as prescribed by standard, but we want to provide a better compression
+       local i_name  = string.format("item-%d-%f-%s", i_im_id, i_price, sysbench.rand.string("@@@@@"))
+       local i_data  = string.format("data-%s-%s", i_name, sysbench.rand.string("@@@@@"))
+       
+       local qry = string.format([[INSERT INTO item%d (i_id, i_im_id, i_name, i_price, i_data) values(%d,%d,'%s',%f,'%s')]], tbl_num, j, i_im_id, i_name:sub(1,24), i_price, i_data:sub(1,50))
+       print("processign query !!!!", qry)
+       
+       con:query(qry)
+       con:disconnect()
+
+    end
+end
+
 -- Create the tables and Prepare the dataset. This command supports parallel execution, i.e. will
 -- benefit from executing with --threads > 1 as long as --scale > 1
 function cmd_prepare()
@@ -101,24 +135,29 @@ function cmd_prepare()
 
    print("SKIP DDL IS", sysbench.opt.skipddl)
 
-
    if not sysbench.opt.skipddl then 
        -- create tables in parallel table per thread
        for i = sysbench.tid % sysbench.opt.threads + 1, sysbench.opt.tables,
        sysbench.opt.threads do
          create_tables(drv, con, i)
        end
-       
+        
        -- make sure all tables are created before we load data
        --
        print("Waiting on tables 30 sec\n")
        sleep(30)
+   else
+       for i = sysbench.tid % sysbench.opt.threads + 1, sysbench.opt.tables,
+       sysbench.opt.threads do
+            load_local_router_tables(i)
+       end
    end
 
    for i = sysbench.tid % sysbench.opt.threads + 1, sysbench.opt.scale,
    sysbench.opt.threads do
      load_tables(i)
    end
+   
 
 end
 
@@ -340,20 +379,6 @@ function create_tables(drv, con, table_num)
 
    con:query(query)
 
-   con:bulk_insert_init("INSERT INTO item" .. i .." (i_id, i_im_id, i_name, i_price, i_data) values")
-   for j = 1 , MAXITEMS do
-      local i_im_id = sysbench.rand.uniform(1,10000)
-      local i_price = sysbench.rand.uniform_double()*100+1
-      -- i_name is not generated as prescribed by standard, but we want to provide a better compression
-      local i_name  = string.format("item-%d-%f-%s", i_im_id, i_price, sysbench.rand.string("@@@@@"))
-      local i_data  = string.format("data-%s-%s", i_name, sysbench.rand.string("@@@@@"))
- 
-      query = string.format([[(%d,%d,'%s',%f,'%s')]],
-	j, i_im_id, i_name:sub(1,24), i_price, i_data:sub(1,50))
-        con:bulk_insert_next(query)
-		 
-   end
-   con:bulk_insert_done()
 
     print(string.format("Adding indexes %d ... \n", i))
     con:query("CREATE INDEX idx_customer"..i.." ON customer"..i.." (c_w_id,c_d_id,c_last,c_first)")
@@ -423,180 +448,199 @@ function load_tables(warehouse_num)
    for table_num = 1, sysbench.opt.tables do 
 	  --con:query("SET autocommit=1")
 
-   print(string.format("loading tables: %d for warehouse: %d\n", table_num, warehouse_num))
-   local drv,con = db_connection_init()
-   
-   local qry_table = string.format([[INSERT INTO warehouse%d (w_id, w_name, w_street_1, w_street_2, w_city, w_state, w_zip, w_tax, w_ytd) values(%d, '%s','%s','%s', '%s', '%s', '%s', %f,300000)]],
-        table_num, warehouse_num, sysbench.rand.string("name-@@@@@"), sysbench.rand.string("street1-@@@@@@@@@@"),
-        sysbench.rand.string("street2-@@@@@@@@@@"), sysbench.rand.string("city-@@@@@@@@@@"),
-        sysbench.rand.string("@@"),sysbench.rand.string("zip-#####"),sysbench.rand.uniform_double()*0.2 )
-       
-    print("processign query !!!!", qry_table)
-    con:query(qry_table)
-    con:disconnect()
-
-   for d_id = 1 , DIST_PER_WARE do
+       print(string.format("loading tables: %d for warehouse: %d\n", table_num, warehouse_num))
        local drv,con = db_connection_init()
-
-       local qry = string.format([[INSERT INTO district%d(d_id, d_w_id, d_name, d_street_1, d_street_2, d_city, d_state, d_zip, d_tax, d_ytd, d_next_o_id) values 
-       (%d, %d, '%s','%s','%s', '%s', '%s', '%s', %f,30000,3001)]], table_num, d_id, warehouse_num, 
-      sysbench.rand.string("name-@@@@@"), sysbench.rand.string("street1-@@@@@@@@@@"),
-      sysbench.rand.string("street2-@@@@@@@@@@"), sysbench.rand.string("city-@@@@@@@@@@"),
-        sysbench.rand.string("@@"),sysbench.rand.string("zip-#####"),sysbench.rand.uniform_double()*0.2 )
-         
-        print("processing qry !!!!", qry)
-
-        res = con:query(qry)
-        
+       
+       local qry_table = string.format([[INSERT INTO warehouse%d (w_id, w_name, w_street_1, w_street_2, w_city, w_state, w_zip, w_tax, w_ytd) values(%d, '%s','%s','%s', '%s', '%s', '%s', %f,300000)]],
+            table_num, warehouse_num, sysbench.rand.string("name-@@@@@"), sysbench.rand.string("street1-@@@@@@@@@@"),
+            sysbench.rand.string("street2-@@@@@@@@@@"), sysbench.rand.string("city-@@@@@@@@@@"),
+            sysbench.rand.string("@@"),sysbench.rand.string("zip-#####"),sysbench.rand.uniform_double()*0.2 )
+           
+        print("processign query !!!!", qry_table)
+        con:query(qry_table)
         con:disconnect()
-   end
 
--- CUSTOMER TABLE
+       for d_id = 1 , DIST_PER_WARE do
+           local drv,con = db_connection_init()
 
-   for d_id = 1 , DIST_PER_WARE do
-   for c_id = 1 , CUST_PER_DIST do
-        local c_last
-        
-        if c_id <= 1000 then
-            c_last = Lastname(c_id - 1)
-        else 
-            c_last = Lastname(NURand(255, 0, 999))
+           local qry = string.format([[INSERT INTO district%d(d_id, d_w_id, d_name, d_street_1, d_street_2, d_city, d_state, d_zip, d_tax, d_ytd, d_next_o_id) values 
+           (%d, %d, '%s','%s','%s', '%s', '%s', '%s', %f,30000,3001)]], table_num, d_id, warehouse_num, 
+          sysbench.rand.string("name-@@@@@"), sysbench.rand.string("street1-@@@@@@@@@@"),
+          sysbench.rand.string("street2-@@@@@@@@@@"), sysbench.rand.string("city-@@@@@@@@@@"),
+            sysbench.rand.string("@@"),sysbench.rand.string("zip-#####"),sysbench.rand.uniform_double()*0.2 )
+             
+            print("processing qry !!!!", qry)
+
+            res = con:query(qry)
+            
+            con:disconnect()
+       end
+
+    -- CUSTOMER TABLE
+
+       for d_id = 1 , DIST_PER_WARE do
+       for c_id = 1 , CUST_PER_DIST do
+            local c_last
+            
+            if c_id <= 1000 then
+                c_last = Lastname(c_id - 1)
+            else 
+                c_last = Lastname(NURand(255, 0, 999))
+            end
+            
+            
+            local drv,con = db_connection_init()
+            
+            qry = string.format([[INSERT INTO customer1
+          (c_id, c_d_id, c_w_id, c_first, c_middle, c_last, c_street_1, c_street_2, c_city, c_state, c_zip, 
+           c_phone, c_since, c_credit, c_credit_lim, c_discount, c_balance, c_ytd_payment, c_payment_cnt, c_delivery_cnt, 
+               c_data) values(%d, %d, %d, '%s','OE','%s','%s', '%s', '%s', '%s', '%s','%s',NOW(),'%s',50000,%f,-10,10,1,0,'%s' )]],
+               c_id, d_id, warehouse_num, sysbench.rand.string("first-"..string.rep("@",sysbench.rand.uniform(2,10))), 
+               c_last, sysbench.rand.string("street1-@@@@@@@@@@"), sysbench.rand.string("street2-@@@@@@@@@@"), sysbench.rand.string("city-@@@@@@@@@@"),
+            sysbench.rand.string("@@"),sysbench.rand.string("zip-#####"),
+            sysbench.rand.string(string.rep("#",16)),
+            (sysbench.rand.uniform(1,100) > 10) and "GC" or "BC",
+        sysbench.rand.uniform_double()*0.5,
+        string.rep(sysbench.rand.string("@"),sysbench.rand.uniform(300,500))
+            )
+
+            print("processign query !!!!", qry)
+            res = con:query(qry)
+            con:disconnect()
+       end 
+       end
+
+
+    -- HISTORY TABLE
+
+
+       for d_id = 1 , DIST_PER_WARE do
+       for c_id = 1 , CUST_PER_DIST do
+           local drv,con = db_connection_init()
+           
+           
+           query = string.format([[INSERT INTO history%d (h_c_id, h_c_d_id, h_c_w_id, h_d_id, h_w_id, h_date, h_amount, h_data) values(%d, %d, %d, %d, %d, NOW(), 10, '%s' )]],
+            table_num, c_id, d_id, warehouse_num, d_id, warehouse_num, string.rep(sysbench.rand.string("@"),sysbench.rand.uniform(12,24)))
+            
+            
+            print("processign query !!!!", query)
+            
+            con:query(query) 
+            con:disconnect()
+
+       end 
+       end
+
+
+        local tab = {}
+        local a_counts = {}
+
+        for i = 1, ORDER_PER_DIST do
+            tab[i] = i
         end
-        
-        
-        local drv,con = db_connection_init()
-        
-        qry = string.format([[INSERT INTO customer1
-	  (c_id, c_d_id, c_w_id, c_first, c_middle, c_last, c_street_1, c_street_2, c_city, c_state, c_zip, 
-	   c_phone, c_since, c_credit, c_credit_lim, c_discount, c_balance, c_ytd_payment, c_payment_cnt, c_delivery_cnt, 
-           c_data) values(%d, %d, %d, '%s','OE','%s','%s', '%s', '%s', '%s', '%s','%s',NOW(),'%s',50000,%f,-10,10,1,0,'%s' )]],
-           c_id, d_id, warehouse_num, sysbench.rand.string("first-"..string.rep("@",sysbench.rand.uniform(2,10))), 
-           c_last, sysbench.rand.string("street1-@@@@@@@@@@"), sysbench.rand.string("street2-@@@@@@@@@@"), sysbench.rand.string("city-@@@@@@@@@@"),
-        sysbench.rand.string("@@"),sysbench.rand.string("zip-#####"),
-        sysbench.rand.string(string.rep("#",16)),
-        (sysbench.rand.uniform(1,100) > 10) and "GC" or "BC",
-	sysbench.rand.uniform_double()*0.5,
-	string.rep(sysbench.rand.string("@"),sysbench.rand.uniform(300,500))
-        )
 
-        print("processign query !!!!", qry)
-        res = con:query(qry)
-        con:disconnect()
-   end 
-   end
+        for i = 1,ORDER_PER_DIST do
+            local j = math.random(i, ORDER_PER_DIST)
+            tab[i], tab[j] = tab[j], tab[i]
+        end
+
+       a_counts[warehouse_num] = {}
+
+       for d_id = 1 , DIST_PER_WARE do
+       a_counts[warehouse_num][d_id] = {}
+       for o_id = 1 , ORDER_PER_DIST do
+    -- 3,000 rows in the ORDER table with
+            a_counts[warehouse_num][d_id][o_id] = sysbench.rand.uniform(5,15)
+           
+            local drv,con = db_connection_init()
+           
+            query = string.format([[INSERT INTO orders%d  (o_id, o_d_id, o_w_id, o_c_id, o_entry_d, o_carrier_id, o_ol_cnt, o_all_local) values (%d, %d, %d, %d, NOW(), %s, %d, 1 )]],
+            table_num, o_id, d_id, warehouse_num, tab[o_id], o_id < 2101 and sysbench.rand.uniform(1,10) or "NULL", a_counts[warehouse_num][d_id][o_id]
+            )
+            
+            print("processign query !!!!", query)
+            con:query(query)
+          
+            con:disconnect()
+       end 
+       end
 
 
--- HISTORY TABLE
-
-
-   for d_id = 1 , DIST_PER_WARE do
-   for c_id = 1 , CUST_PER_DIST do
-       local drv,con = db_connection_init()
+    -- STOCK table
+       for s_id = 1 , MAXITEMS do
+            local drv,con = db_connection_init()
+            
+            query = string.format([[INSERT INTO stock%d (s_i_id, s_w_id, s_quantity, s_dist_01, s_dist_02, s_dist_03, s_dist_04, s_dist_05, s_dist_06, s_dist_07, s_dist_08, s_dist_09, s_dist_10, s_ytd, s_order_cnt, s_remote_cnt, s_data) values(%d, %d, %d,'%s','%s','%s','%s','%s','%s','%s','%s','%s','%s',0,0,0,'%s')]], table_num,
+        s_id, warehouse_num, sysbench.rand.uniform(10,100),
+        string.rep(sysbench.rand.string("@"),24),
+        string.rep(sysbench.rand.string("@"),24),
+        string.rep(sysbench.rand.string("@"),24),
+        string.rep(sysbench.rand.string("@"),24),
+        string.rep(sysbench.rand.string("@"),24),
+        string.rep(sysbench.rand.string("@"),24),
+        string.rep(sysbench.rand.string("@"),24),
+        string.rep(sysbench.rand.string("@"),24),
+        string.rep(sysbench.rand.string("@"),24),
+        string.rep(sysbench.rand.string("@"),24),
+        string.rep(sysbench.rand.string("@"),sysbench.rand.uniform(26,50)))
+            
+            print("processign query !!!!", query)
+            con:query(query)
+            con:disconnect()
        
+       end 
+
+       if false then
+           local drv,con = db_connection_init()
+
+           query = string.format("INSERT INTO new_orders%d (no_o_id, no_d_id, no_w_id) SELECT o_id, o_d_id, o_w_id FROM orders%d WHERE o_id>%d and o_w_id=%d", table_num, table_num, 21, warehouse_num)
+           print("processign query !!!!", query)
+           con:query(query)
+           con:disconnect()
+       else
+
+           for d_id = 1 , DIST_PER_WARE do
+               for o_id = NEW_ORDER_BOUND , ORDER_PER_DIST do
+            -- 3,000 rows in the ORDER table with
+                    local drv,con = db_connection_init()
+                   
+                    query = string.format([[INSERT INTO new_orders%d  (no_o_id, no_d_id, no_w_id) values (%d, %d, %d)]],
+                    table_num, o_id, d_id, warehouse_num
+                    )
+                    
+                    print("processign query !!!!", query)
+                    con:query(query)
+                  
+                    con:disconnect()
+               end 
+           end
        
-       query = string.format([[INSERT INTO history%d (h_c_id, h_c_d_id, h_c_w_id, h_d_id, h_w_id, h_date, h_amount, h_data) values(%d, %d, %d, %d, %d, NOW(), 10, '%s' )]],
-        table_num, c_id, d_id, warehouse_num, d_id, warehouse_num, string.rep(sysbench.rand.string("@"),sysbench.rand.uniform(12,24)))
-        
-        
-        print("processign query !!!!", query)
-        
-        con:query(query) 
-        con:disconnect()
+       end
 
-   end 
-   end
-
-
-    local tab = {}
-    local a_counts = {}
-
-    for i = 1, ORDER_PER_DIST do
-        tab[i] = i
-    end
-
-    for i = 1,ORDER_PER_DIST do
-        local j = math.random(i, ORDER_PER_DIST)
-        tab[i], tab[j] = tab[j], tab[i]
-    end
-
-   a_counts[warehouse_num] = {}
-
-   for d_id = 1 , DIST_PER_WARE do
-   a_counts[warehouse_num][d_id] = {}
-   for o_id = 1 , ORDER_PER_DIST do
--- 3,000 rows in the ORDER table with
-        a_counts[warehouse_num][d_id][o_id] = sysbench.rand.uniform(5,15)
+       -- order_line
+       for d_id = 1 , DIST_PER_WARE do
+       for o_id = 1 , CUST_PER_DIST do
+       for ol_id = 1, a_counts[warehouse_num][d_id][o_id] do 
+           
+            local drv,con = db_connection_init()
+     
+            query = string.format([[INSERT INTO order_line%d (ol_o_id, ol_d_id, ol_w_id, ol_number, ol_i_id, ol_supply_w_id, ol_delivery_d, 
+               ol_quantity, ol_amount, ol_dist_info ) values(%d, %d, %d, %d, %d, %d, %s, 5, %f, '%s' )]], table_num,
+            o_id, d_id, warehouse_num, ol_id, sysbench.rand.uniform(1, MAXITEMS), warehouse_num,
+            o_id < 2101 and "NOW()" or "NULL", 
+            o_id < 2101 and 0 or sysbench.rand.uniform_double()*9999.99,
+        string.rep(sysbench.rand.string("@"),24)
+            )
        
-        local drv,con = db_connection_init()
+            print("processign query !!!!", query)
+            con:query(query)
        
-        query = string.format([[INSERT INTO orders%d  (o_id, o_d_id, o_w_id, o_c_id, o_entry_d, o_carrier_id, o_ol_cnt, o_all_local) values (%d, %d, %d, %d, NOW(), %s, %d, 1 )]],
-        table_num, o_id, d_id, warehouse_num, tab[o_id], o_id < 2101 and sysbench.rand.uniform(1,10) or "NULL", a_counts[warehouse_num][d_id][o_id]
-        )
-        
-        print("processign query !!!!", query)
-        con:query(query)
+            con:disconnect()
+       end
+       end 
+       end
+
       
-        con:disconnect()
-   end 
-   end
-
-
--- STOCK table
-   for s_id = 1 , MAXSTOCK do
-        local drv,con = db_connection_init()
-        
-        query = string.format([[INSERT INTO stock%d (s_i_id, s_w_id, s_quantity, s_dist_01, s_dist_02, s_dist_03, s_dist_04, s_dist_05, s_dist_06, s_dist_07, s_dist_08, s_dist_09, s_dist_10, s_ytd, s_order_cnt, s_remote_cnt, s_data) values(%d, %d, %d,'%s','%s','%s','%s','%s','%s','%s','%s','%s','%s',0,0,0,'%s')]], table_num,
-	s_id, warehouse_num, sysbench.rand.uniform(10,100),
-	string.rep(sysbench.rand.string("@"),24),
-	string.rep(sysbench.rand.string("@"),24),
-	string.rep(sysbench.rand.string("@"),24),
-	string.rep(sysbench.rand.string("@"),24),
-	string.rep(sysbench.rand.string("@"),24),
-	string.rep(sysbench.rand.string("@"),24),
-	string.rep(sysbench.rand.string("@"),24),
-	string.rep(sysbench.rand.string("@"),24),
-	string.rep(sysbench.rand.string("@"),24),
-	string.rep(sysbench.rand.string("@"),24),
-	string.rep(sysbench.rand.string("@"),sysbench.rand.uniform(26,50)))
-        
-        print("processign query !!!!", query)
-        con:query(query)
-        con:disconnect()
-   
-   end 
-
-   if false then
-       local drv,con = db_connection_init()
-
-       query = string.format("INSERT INTO new_orders%d (no_o_id, no_d_id, no_w_id) SELECT o_id, o_d_id, o_w_id FROM orders%d WHERE o_id>%d and o_w_id=%d", table_num, table_num, 21, warehouse_num)
-       print("processign query !!!!", query)
-       con:query(query)
-       con:disconnect()
-   end
-
-   for d_id = 1 , DIST_PER_WARE do
-   for o_id = 1 , CUST_PER_DIST do
-   for ol_id = 1, a_counts[warehouse_num][d_id][o_id] do 
-       
-        local drv,con = db_connection_init()
- 
-        query = string.format([[INSERT INTO order_line%d (ol_o_id, ol_d_id, ol_w_id, ol_number, ol_i_id, ol_supply_w_id, ol_delivery_d, 
-           ol_quantity, ol_amount, ol_dist_info ) values(%d, %d, %d, %d, %d, %d, %s, 5, %f, '%s' )]], table_num,
-	    o_id, d_id, warehouse_num, ol_id, sysbench.rand.uniform(1, MAXITEMS), warehouse_num,
-        o_id < 2101 and "NOW()" or "NULL", 
-        o_id < 2101 and 0 or sysbench.rand.uniform_double()*9999.99,
-	string.rep(sysbench.rand.string("@"),24)
-        )
-   
-        print("processign query !!!!", query)
-        con:query(query)
-   
-        con:disconnect()
-   end
-   end 
-   end
-
-  
   end
 
 end
@@ -611,16 +655,18 @@ function cleanup()
    local drv,con = db_connection_init()
 
    for i = 1, sysbench.opt.tables do
-      print(string.format("Dropping tables '%d'...", i))
-      con:query("DROP TABLE IF EXISTS history" .. i )
-      con:query("DROP TABLE IF EXISTS new_orders" .. i )
-      con:query("DROP TABLE IF EXISTS order_line" .. i )
-      con:query("DROP TABLE IF EXISTS orders" .. i )
-      con:query("DROP TABLE IF EXISTS customer" .. i )
-      con:query("DROP TABLE IF EXISTS district" .. i )
-      con:query("DROP TABLE IF EXISTS stock" .. i )
-      con:query("DROP TABLE IF EXISTS item" .. i )
-      con:query("DROP TABLE IF EXISTS warehouse" .. i )
+       con:query(string.format("DROP TABLE IF EXISTS item%d", i))
+       for j = 1, sysbench.opt.scale do
+          print(string.format("Dropping tables '%d'... for warehouse j", i, j))
+          con:query(string.format("DELETE FROM history%d WHERE h_c_w_id = %d", i, j))
+          con:query(string.format("DELETE FROM new_orders%d WHERE no_w_id = %d", i, j))
+          con:query(string.format("DELETE FROM order_line%d WHERE ol_w_id = %d", i, j))
+          con:query(string.format("DELETE FROM orders%d WHERE o_w_id = %d", i, j))
+          con:query(string.format("DELETE FROM customer%d WHERE c_w_id = %d", i, j))
+          con:query(string.format("DELETE FROM district%d WHERE d_w_id = %d", i, j))
+          con:query(string.format("DELETE FROM stock%d WHERE s_w_id = %d", i, j))
+          con:query(string.format("DELETE FROM warehouse%d WHERE w_id = %d", i, j))
+        end
    end
 end
 

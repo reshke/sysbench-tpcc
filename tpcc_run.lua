@@ -234,7 +234,9 @@ function payment()
     local byname
     local c_w_id
     local c_d_id
-    local c_last = Lastname(NURand(255,0,999))
+    
+    local c_last = Lastname(c_id - 1)
+    ---local c_last = Lastname(NURand(255,0,999))
 
     if sysbench.rand.uniform(1, 100) <= 60 then
         byname = 1 -- select by last name 
